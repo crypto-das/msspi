@@ -1915,6 +1915,19 @@ int msspi_get_srtp_profile( MSSPI_HANDLE h, uint16_t * profile )
     MSSPIEHCATCH_HRET( 0 );
 }
 
+#ifndef SECPKG_ATTR_KEYING_MATERIAL_INFO
+#define SECPKG_ATTR_KEYING_MATERIAL_INFO 0x6a
+
+typedef struct _SecPkgContext_KeyingMaterialInfo
+{
+    WORD cbLabel;                   // Size in bytes of the label, including terminating null.
+    LPSTR pszLabel;                 // Label string (null-terminated).
+    WORD cbContextValue;            // Size in bytes of the context value.
+    PBYTE pbContextValue;           // Context value.
+    DWORD cbKeyingMaterial;         // Size in bytes of the keying material to derive.
+} SecPkgContext_KeyingMaterialInfo, *PSecPkgContext_KeyingMaterialInfo;
+#endif // SECPKG_ATTR_KEYING_MATERIAL_INFO
+
 int msspi_set_keying_material_info( MSSPI_HANDLE h, const uint8_t * label, size_t label_len, const uint8_t * context, size_t context_len, size_t keying_material_len )
 {
     MSSPIEHTRY_h;
@@ -1963,6 +1976,16 @@ int msspi_set_keying_material_info( MSSPI_HANDLE h, const uint8_t * label, size_
 
     MSSPIEHCATCH_HRET( 0 );
 }
+
+#ifndef SECPKG_ATTR_KEYING_MATERIAL
+#define SECPKG_ATTR_KEYING_MATERIAL 0x6b
+
+typedef struct _SecPkgContext_KeyingMaterial
+{
+    DWORD cbKeyingMaterial;         // Size in bytes of the keying material.
+    PBYTE pbKeyingMaterial;         // Keying material (allocated by SSPI, free with FreeContextBuffer).
+} SecPkgContext_KeyingMaterial, *PSecPkgContext_KeyingMaterial;
+#endif // SECPKG_ATTR_KEYING_MATERIAL
 
 int msspi_get_keying_material( MSSPI_HANDLE h, const uint8_t ** keying_material, size_t * keying_material_len )
 {
