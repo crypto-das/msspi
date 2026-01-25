@@ -61,6 +61,7 @@ int msspi_set_version( MSSPI_HANDLE h, int min, int max );
 int msspi_set_cipherlist( MSSPI_HANDLE h, const uint8_t * cipherlist, size_t cipherlist_len );
 int msspi_set_hostname( MSSPI_HANDLE h, const uint8_t * hostname, size_t hostname_len );
 int msspi_set_alpn( MSSPI_HANDLE h, const uint8_t * alpn, size_t alpn_len );
+int msspi_set_srtp_profiles( MSSPI_HANDLE h, const uint8_t * profiles, size_t profiles_len );
 int msspi_set_peerauth( MSSPI_HANDLE h, int enable );
 int msspi_set_cert_cb( MSSPI_HANDLE h, msspi_cert_cb cert );
 
@@ -146,6 +147,7 @@ int msspi_get_peerchain( MSSPI_HANDLE h, const uint8_t ** certs, size_t * certs_
 int msspi_get_peernames( MSSPI_HANDLE h, const uint8_t ** subject, size_t * subject_len, const uint8_t ** issuer, size_t * issuer_len );
 int msspi_get_issuerlist( MSSPI_HANDLE h, const uint8_t ** certs, size_t * certs_lens, size_t * certs_count );
 int msspi_get_alpn( MSSPI_HANDLE h, const uint8_t ** alpn, size_t * alpn_len );
+int msspi_get_srtp_profile( MSSPI_HANDLE h, uint16_t * profile );
 
 #ifndef TRUST_E_CERT_SIGNATURE
 #define TRUST_E_CERT_SIGNATURE          (uint32_t)0x80096004L
@@ -173,6 +175,9 @@ int msspi_get_alpn( MSSPI_HANDLE h, const uint8_t ** alpn, size_t * alpn_len );
 
 int msspi_get_verify_status( MSSPI_HANDLE h, uint32_t * status );
 int msspi_get_peercert_in_store_status( MSSPI_HANDLE h, const uint8_t * store, size_t store_len, uint32_t * status );
+
+int msspi_set_keying_material_info( MSSPI_HANDLE h, const uint8_t * label, size_t label_len, const uint8_t * context, size_t context_len, size_t keying_material_len );
+int msspi_get_keying_material( MSSPI_HANDLE h, const uint8_t ** keying_material, size_t * keying_material_len );
 
 int msspi_close( MSSPI_HANDLE h );
 

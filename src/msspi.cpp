@@ -257,6 +257,28 @@ void msspi_logger_func( char level, const char * format, ... )
 #define msspi_logger_info( format, ... )
 #endif // MSSPI_LOGGER
 
+#ifndef ANYSIZE_ARRAY
+#define ANYSIZE_ARRAY 1
+#endif
+
+#ifndef SECBUFFER_SRTP_PROTECTION_PROFILES
+#define SECBUFFER_SRTP_PROTECTION_PROFILES 14  // SRTP protection profiles for DTLS-SRTP
+
+typedef struct _SEC_SRTP_PROTECTION_PROFILES {
+  unsigned short ProfilesSize;
+  unsigned short ProfilesList[ANYSIZE_ARRAY];
+} SEC_SRTP_PROTECTION_PROFILES, *PSEC_SRTP_PROTECTION_PROFILES;
+
+#define SECPKG_ATTR_SRTP_PROTECTION_PROFILES 36
+
+typedef struct _SecPkgContext_SrtpProtectionProfiles
+{
+    unsigned short ProtectionProfilesSize;
+    unsigned char ProtectionProfiles[ANYSIZE_ARRAY];
+} SecPkgContext_SrtpProtectionProfiles, *PSecPkgContext_SrtpProtectionProfiles;
+
+#endif /*SECBUFFER_SRTP_PROTECTION_PROFILES*/
+
 #ifndef SECBUFFER_APPLICATION_PROTOCOLS
 #define SECBUFFER_APPLICATION_PROTOCOLS 18  // Lists of application protocol IDs, one per negotiation extension
 
@@ -266,10 +288,6 @@ typedef enum _SEC_APPLICATION_PROTOCOL_NEGOTIATION_EXT
     SecApplicationProtocolNegotiationExt_NPN,
     SecApplicationProtocolNegotiationExt_ALPN
 } SEC_APPLICATION_PROTOCOL_NEGOTIATION_EXT, *PSEC_APPLICATION_PROTOCOL_NEGOTIATION_EXT;
-
-#ifndef ANYSIZE_ARRAY
-#define ANYSIZE_ARRAY 1
-#endif
 
 typedef struct _SEC_APPLICATION_PROTOCOL_LIST {
     SEC_APPLICATION_PROTOCOL_NEGOTIATION_EXT ProtoNegoExt; // Protocol negotiation extension type to use with this list of protocols
@@ -379,6 +397,19 @@ static int msspi_init_sspi( void )
         return 0;
     }
 
+#ifdef _WIN32
+    if( sspi->SetContextAttributesA == NULL )
+    {
+        HMODULE hSecur32 = (HMODULE)LIBLOAD( "secur32.dll" );
+        if( hSecur32 )
+        {
+            void * pSetContextAttributesA = LIBFUNC( hSecur32, "SetContextAttributesA" );
+            if( pSetContextAttributesA )
+                sspi->SetContextAttributesA = (SET_CONTEXT_ATTRIBUTES_FN_A)pSetContextAttributesA;
+        }
+    }
+#endif
+
     return 1;
 }
 
@@ -482,7 +513,9 @@ struct MSSPI
         is.verify_offline = 0;
         is.verify_revocation = 1;
         is.dtls = 0;
+        is.srtp = 0;
         state = MSSPI_EMPTY;
+        scLast = SEC_I_CONTINUE_NEEDED;
         hCtx.dwLower = 0;
         hCtx.dwUpper = 0;
         cred = NULL;
@@ -501,6 +534,7 @@ struct MSSPI
         peercert = NULL;
         grbitEnabledProtocols = 0;
         dtls_mtu = 0;
+        srtp_profile = 0;
     }
 
     ~MSSPI()
@@ -537,6 +571,7 @@ struct MSSPI
         unsigned verify_offline : 1;
         unsigned verify_revocation : 1;
         unsigned dtls : 1;
+        unsigned srtp : 1;
     } is;
 
     int state;
@@ -552,10 +587,15 @@ struct MSSPI
     std::vector<std::vector<BYTE>> peercerts;
     std::vector<std::vector<BYTE>> peerchain;
     std::vector<std::vector<BYTE>> issuerlist;
+    std::vector<BYTE> alpn_holder;
+    std::vector<BYTE> srtp_holder;
+    std::vector<BYTE> keying_material;
     std::vector<BYTE> peeraddr;
     DWORD dtls_mtu;
+    WORD srtp_profile;
 
     CtxtHandle hCtx;
+    SECURITY_STATUS scLast;
     MSSPI_CredCache * cred;
     std::vector<PCCERT_CONTEXT> certs;
     std::string certstore;
@@ -583,16 +623,6 @@ struct MSSPI
     bool is_ctx()
     {
         return hCtx.dwLower || hCtx.dwUpper;
-    }
-
-    void set_alpn_holder( std::vector<BYTE> & alpn_holder )
-    {
-        alpn_holder.resize( sizeof( SEC_APPLICATION_PROTOCOLS ) + alpn.length() );
-        SEC_APPLICATION_PROTOCOLS * sap = (SEC_APPLICATION_PROTOCOLS *)alpn_holder.data();
-        sap->ProtocolListsSize = (unsigned long)( sizeof( SEC_APPLICATION_PROTOCOL_LIST ) + alpn.length() );
-        sap->ProtocolLists[0].ProtoNegoExt = SecApplicationProtocolNegotiationExt_ALPN;
-        sap->ProtocolLists[0].ProtocolListSize = (unsigned short)alpn.length();
-        memcpy( sap->ProtocolLists[0].ProtocolList, alpn.c_str(), alpn.length() );
     }
 
 private:
@@ -1279,7 +1309,12 @@ int msspi_accept( MSSPI_HANDLE h )
 
     for( ;; )
     {
-        SECURITY_STATUS scRet = SEC_I_CONTINUE_NEEDED;
+        if( h->out_len )
+        {
+            int io = write_common( h );
+            if( io <= 0 )
+                return io;
+        }
 
         if( h->state & MSSPI_READING && !( h->state & MSSPI_SHUTDOWN_PROC ) )
         {
@@ -1288,7 +1323,8 @@ int msspi_accept( MSSPI_HANDLE h )
                 return io;
         }
 
-        if( !h->out_len )
+        SECURITY_STATUS scRet = h->scLast;
+        if( scRet == SEC_I_CONTINUE_NEEDED || scRet == SEC_E_INCOMPLETE_MESSAGE || scRet == SEC_I_MESSAGE_FRAGMENT )
         {
             SecBuffer       InBuffers[5];
             SecBufferDesc   InBuffer = { SECBUFFER_VERSION, 0, InBuffers };
@@ -1296,7 +1332,6 @@ int msspi_accept( MSSPI_HANDLE h )
             SecBuffer       OutBuffers[2];
             unsigned long   dwSSPIOutFlags;
             TimeStamp       tsExpiry;
-            std::vector<BYTE> alpn_holder;
             unsigned short  secDtlsMtu; /* SEC_DTLS_MTU */
 
             DWORD dwSSPIFlags = (DWORD)
@@ -1357,14 +1392,20 @@ int msspi_accept( MSSPI_HANDLE h )
                     }
                 }
 
-                if( !h->is_ctx() )
+                if( h->is.dtls || !h->is_ctx() )
                 {
-                    if( h->alpn.length() )
+                    if( !h->alpn_holder.empty() )
                     {
-                        h->set_alpn_holder( alpn_holder );
-                        InBuffers[InBuffer.cBuffers].pvBuffer = alpn_holder.data();
-                        InBuffers[InBuffer.cBuffers].cbBuffer = (bufsize_t)alpn_holder.size();
+                        InBuffers[InBuffer.cBuffers].pvBuffer = h->alpn_holder.data();
+                        InBuffers[InBuffer.cBuffers].cbBuffer = (bufsize_t)h->alpn_holder.size();
                         InBuffers[InBuffer.cBuffers].BufferType = SECBUFFER_APPLICATION_PROTOCOLS;
+                        InBuffer.cBuffers++;
+                    }
+                    if( !h->srtp_holder.empty() )
+                    {
+                        InBuffers[InBuffer.cBuffers].pvBuffer = h->srtp_holder.data();
+                        InBuffers[InBuffer.cBuffers].cbBuffer = (bufsize_t)h->srtp_holder.size();
+                        InBuffers[InBuffer.cBuffers].BufferType = SECBUFFER_SRTP_PROTECTION_PROFILES;
                         InBuffer.cBuffers++;
                     }
                 }
@@ -1415,36 +1456,34 @@ int msspi_accept( MSSPI_HANDLE h )
                 msspi_logger_info( "FreeContextBuffer( pvBuffer = %016llX )", (uint64_t)(uintptr_t)OutBuffers[1].pvBuffer );
                 EXTERCALL( sspi->FreeContextBuffer( OutBuffers[1].pvBuffer ) );
             }
+
+            h->scLast = scRet;
+
+            if( h->is.dtls )
+            {
+                if( scRet == SEC_I_CONTINUE_NEEDED ||
+                    scRet == SEC_E_INCOMPLETE_MESSAGE )
+                {
+                    h->state |= MSSPI_READING;
+                    continue;
+                }
+                if( scRet == SEC_I_MESSAGE_FRAGMENT )
+                    continue;
+            }
+            else
+            {
+                if( scRet == SEC_E_INCOMPLETE_MESSAGE )
+                {
+                    h->state |= MSSPI_READING;
+                    continue;
+                }
+                if( scRet == SEC_I_CONTINUE_NEEDED )
+                    continue;
+            }
         }
 
         if( h->out_len )
-        {
-            int io = write_common( h );
-            if( io <= 0 )
-                return io;
-        }
-
-        if( h->is.dtls )
-        {
-            if( scRet == SEC_I_CONTINUE_NEEDED ||
-                scRet == SEC_E_INCOMPLETE_MESSAGE )
-            {
-                h->state |= MSSPI_READING;
-                continue;
-            }
-            if( scRet == SEC_I_MESSAGE_FRAGMENT )
-                continue;
-        }
-        else
-        {
-            if( scRet == SEC_E_INCOMPLETE_MESSAGE )
-            {
-                h->state |= MSSPI_READING;
-                continue;
-            }
-            if( scRet == SEC_I_CONTINUE_NEEDED )
-                continue;
-        }
+            continue;
 
         // shutdown OK
         if( h->state & MSSPI_SHUTDOWN_PROC )
@@ -1462,13 +1501,13 @@ int msspi_accept( MSSPI_HANDLE h )
         // handshake OK
         if( scRet == SEC_E_OK )
         {
+            h->scLast = SEC_I_CONTINUE_NEEDED;
             connected( h );
             if( h->in_len )
                 msspi_read( h, NULL, 0 );
             return 1;
         }
 
-        if( FAILED( scRet ) )
         {
             h->state |= MSSPI_ERROR;
             SetLastError( (DWORD)scRet );
@@ -1558,7 +1597,12 @@ int msspi_connect( MSSPI_HANDLE h )
 
     for( ;; )
     {
-        SECURITY_STATUS scRet = SEC_I_CONTINUE_NEEDED;
+        if( h->out_len )
+        {
+            int io = write_common( h );
+            if( io <= 0 )
+                return io;
+        }
 
         if( h->state & MSSPI_X509_LOOKUP )
         {
@@ -1587,7 +1631,8 @@ int msspi_connect( MSSPI_HANDLE h )
                 return io;
         }
 
-        if( !h->out_len )
+        SECURITY_STATUS scRet = h->scLast;
+        if( scRet == SEC_I_CONTINUE_NEEDED || scRet == SEC_E_INCOMPLETE_MESSAGE || scRet == SEC_I_MESSAGE_FRAGMENT )
         {
             SecBuffer       InBuffers[2];
             SecBufferDesc   InBuffer = { SECBUFFER_VERSION, 0, InBuffers };
@@ -1595,7 +1640,6 @@ int msspi_connect( MSSPI_HANDLE h )
             SecBuffer       OutBuffers[2];
             unsigned long   dwSSPIOutFlags;
             TimeStamp       tsExpiry;
-            std::vector<BYTE> alpn_holder;
             unsigned short  secDtlsMtu; /* SEC_DTLS_MTU */
 
             DWORD dwSSPIFlags = (DWORD)
@@ -1640,14 +1684,20 @@ int msspi_connect( MSSPI_HANDLE h )
                 InBuffer.cBuffers++;
             }
             else
-            if( !h->is_ctx() )
+            if( h->is.dtls || !h->is_ctx() )
             {
-                if( h->alpn.length() )
+                if( !h->alpn_holder.empty() )
                 {
-                    h->set_alpn_holder( alpn_holder );
-                    InBuffers[InBuffer.cBuffers].pvBuffer = alpn_holder.data();
-                    InBuffers[InBuffer.cBuffers].cbBuffer = (bufsize_t)alpn_holder.size();
+                    InBuffers[InBuffer.cBuffers].pvBuffer = h->alpn_holder.data();
+                    InBuffers[InBuffer.cBuffers].cbBuffer = (bufsize_t)h->alpn_holder.size();
                     InBuffers[InBuffer.cBuffers].BufferType = SECBUFFER_APPLICATION_PROTOCOLS;
+                    InBuffer.cBuffers++;
+                }
+                if( !h->srtp_holder.empty() )
+                {
+                    InBuffers[InBuffer.cBuffers].pvBuffer = h->srtp_holder.data();
+                    InBuffers[InBuffer.cBuffers].cbBuffer = (bufsize_t)h->srtp_holder.size();
+                    InBuffers[InBuffer.cBuffers].BufferType = SECBUFFER_SRTP_PROTECTION_PROFILES;
                     InBuffer.cBuffers++;
                 }
                 if( h->is.dtls && h->dtls_mtu )
@@ -1708,36 +1758,34 @@ int msspi_connect( MSSPI_HANDLE h )
                 msspi_logger_info( "FreeContextBuffer( pvBuffer = %016llX )", (uint64_t)(uintptr_t)OutBuffers[1].pvBuffer );
                 EXTERCALL( sspi->FreeContextBuffer( OutBuffers[1].pvBuffer ) );
             }
+
+            h->scLast = scRet;
+
+            if( h->is.dtls )
+            {
+                if( scRet == SEC_I_CONTINUE_NEEDED ||
+                    scRet == SEC_E_INCOMPLETE_MESSAGE )
+                {
+                    h->state |= MSSPI_READING;
+                    continue;
+                }
+                if( scRet == SEC_I_MESSAGE_FRAGMENT )
+                    continue;
+            }
+            else
+            {
+                if( scRet == SEC_E_INCOMPLETE_MESSAGE )
+                {
+                    h->state |= MSSPI_READING;
+                    continue;
+                }
+                if( scRet == SEC_I_CONTINUE_NEEDED )
+                    continue;
+            }
         }
 
         if( h->out_len )
-        {
-            int io = write_common( h );
-            if( io <= 0 )
-                return io;
-        }
-
-        if( h->is.dtls )
-        {
-            if( scRet == SEC_I_CONTINUE_NEEDED ||
-                scRet == SEC_E_INCOMPLETE_MESSAGE )
-            {
-                h->state |= MSSPI_READING;
-                continue;
-            }
-            if( scRet == SEC_I_MESSAGE_FRAGMENT )
-                continue;
-        }
-        else
-        {
-            if( scRet == SEC_E_INCOMPLETE_MESSAGE )
-            {
-                h->state |= MSSPI_READING;
-                continue;
-            }
-            if( scRet == SEC_I_CONTINUE_NEEDED )
-                continue;
-        }
+            continue;
 
         // shutdown OK
         if( h->state & MSSPI_SHUTDOWN_PROC )
@@ -1755,6 +1803,7 @@ int msspi_connect( MSSPI_HANDLE h )
         // handshake OK
         if( scRet == SEC_E_OK )
         {
+            h->scLast = SEC_I_CONTINUE_NEEDED;
             // shutdown if params are changed in renegotiation
             if( h->is.renegotiate && !is_new_session_unmodified( h ) )
             {
@@ -1772,17 +1821,192 @@ int msspi_connect( MSSPI_HANDLE h )
 
         if( scRet == SEC_I_INCOMPLETE_CREDENTIALS )
         {
+            h->scLast = SEC_I_CONTINUE_NEEDED;
             h->state |= MSSPI_X509_LOOKUP;
             continue;
         }
 
-        if( FAILED( scRet ) )
         {
             h->state |= MSSPI_ERROR;
             SetLastError( (DWORD)scRet );
             return 0;
         }
     }
+
+    MSSPIEHCATCH_HRET( 0 );
+}
+
+int msspi_set_srtp_profiles( MSSPI_HANDLE h, const uint8_t * profiles, size_t profiles_len )
+{
+    MSSPIEHTRY_h;
+
+    if( !profiles || profiles_len == 0 )
+        h->srtp_holder.clear();
+    else
+    if( profiles_len % 2 != 0 )
+    {
+        SetLastError( ERROR_INVALID_PARAMETER );
+        h->srtp_holder.clear();
+        return 0;
+    }
+    else
+    {
+        h->srtp_holder.resize( sizeof( SEC_SRTP_PROTECTION_PROFILES ) + profiles_len );
+        SEC_SRTP_PROTECTION_PROFILES * sspp = (SEC_SRTP_PROTECTION_PROFILES *)h->srtp_holder.data();
+        sspp->ProfilesSize = (unsigned short)profiles_len;
+        memcpy( sspp->ProfilesList, profiles, profiles_len );
+    }
+
+    return 1;
+
+    MSSPIEHCATCH_HRET( 0 );
+}
+
+#ifndef SECPKG_ATTR_SRTP_PARAMETERS
+#define SECPKG_ATTR_SRTP_PARAMETERS 0x6c
+
+typedef struct _SecPkgContext_SrtpParameters
+{
+    WORD ProtectionProfile;         // Negotiated SRTP protection profile (0x0000 means no profile negotiated).
+    BYTE MasterKeyIdentifierSize;   // Size in bytes of the SRTP master key identifier.
+    PBYTE MasterKeyIdentifier;      // Negotiated SRTP master key identifier.
+} SecPkgContext_SrtpParameters, *PSecPkgContext_SrtpParameters;
+#endif // SECPKG_ATTR_SRTP_PARAMETERS
+
+int msspi_get_srtp_profile( MSSPI_HANDLE h, uint16_t * profile )
+{
+    MSSPIEHTRY_h;
+
+    if( !h->is_ctx() )
+    {
+        SetLastError( ERROR_INVALID_HANDLE );
+        return 0;
+    }
+
+    if( !h->is.srtp )
+    {
+        SecPkgContext_SrtpParameters srtp_ctx;
+        memset( &srtp_ctx, 0, sizeof( srtp_ctx ) );
+
+        SECURITY_STATUS scRet;
+        EXTERCALL( scRet = sspi->QueryContextAttributesA(
+            &h->hCtx,
+            SECPKG_ATTR_SRTP_PARAMETERS,
+            &srtp_ctx
+        ) );
+
+        msspi_logger_info( "QueryContextAttributes( hCtx = %016llX:%016llX, SECPKG_ATTR_SRTP_PARAMETERS ) returned %08X", (uint64_t)(uintptr_t)h->hCtx.dwUpper, (uint64_t)(uintptr_t)h->hCtx.dwLower, (uint32_t)scRet );
+
+        if( scRet != SEC_E_OK )
+        {
+            SetLastError( (DWORD)scRet );
+            return 0;
+        }
+
+        h->srtp_profile = srtp_ctx.ProtectionProfile;
+        h->is.srtp = 1;
+    }
+
+    if( profile )
+        *profile = h->srtp_profile;
+
+    return 1;
+
+    MSSPIEHCATCH_HRET( 0 );
+}
+
+int msspi_set_keying_material_info( MSSPI_HANDLE h, const uint8_t * label, size_t label_len, const uint8_t * context, size_t context_len, size_t keying_material_len )
+{
+    MSSPIEHTRY_h;
+
+    if( !h->is_ctx() )
+    {
+        SetLastError( ERROR_INVALID_HANDLE );
+        return 0;
+    }
+
+    if( !sspi->SetContextAttributesA )
+    {
+        SetLastError( ERROR_NOT_SUPPORTED );
+        return 0;
+    }
+
+    std::string label_str( (const char *)label, label_len );
+
+    SecPkgContext_KeyingMaterialInfo keying_material_info;
+    memset( &keying_material_info, 0, sizeof( keying_material_info ) );
+
+    keying_material_info.cbLabel = (WORD)label_str.length() + 1;
+    keying_material_info.pszLabel = (LPSTR)label_str.c_str();
+    keying_material_info.cbContextValue = (WORD)context_len;
+    keying_material_info.pbContextValue = (BYTE *)context;
+    keying_material_info.cbKeyingMaterial = (DWORD)keying_material_len;
+
+    SECURITY_STATUS scRet;
+    EXTERCALL( scRet = sspi->SetContextAttributesA(
+        &h->hCtx,
+        SECPKG_ATTR_KEYING_MATERIAL_INFO,
+        &keying_material_info,
+        sizeof( keying_material_info )
+    ) );
+
+    msspi_logger_info( "SetContextAttributes( hCtx = %016llX:%016llX, SECPKG_ATTR_KEYING_MATERIAL_INFO ) returned %08X", (uint64_t)(uintptr_t)h->hCtx.dwUpper, (uint64_t)(uintptr_t)h->hCtx.dwLower, (uint32_t)scRet );
+
+    if( FAILED( scRet ) )
+    {
+        h->state |= MSSPI_ERROR;
+        SetLastError( (DWORD)scRet );
+        return 0;
+    }
+
+    return 1;
+
+    MSSPIEHCATCH_HRET( 0 );
+}
+
+int msspi_get_keying_material( MSSPI_HANDLE h, const uint8_t ** keying_material, size_t * keying_material_len )
+{
+    MSSPIEHTRY_h;
+
+    if( !h->is_ctx() )
+    {
+        SetLastError( ERROR_INVALID_HANDLE );
+        return 0;
+    }
+
+    SecPkgContext_KeyingMaterial keying_material_ctx;
+    memset( &keying_material_ctx, 0, sizeof( keying_material_ctx ) );
+
+    SECURITY_STATUS scRet;
+    EXTERCALL( scRet = sspi->QueryContextAttributesA(
+        &h->hCtx,
+        SECPKG_ATTR_KEYING_MATERIAL,
+        &keying_material_ctx
+    ) );
+
+    msspi_logger_info( "QueryContextAttributes( hCtx = %016llX:%016llX, SECPKG_ATTR_KEYING_MATERIAL ) returned %08X", (uint64_t)(uintptr_t)h->hCtx.dwUpper, (uint64_t)(uintptr_t)h->hCtx.dwLower, (uint32_t)scRet );
+
+    if( FAILED( scRet ) )
+    {
+        h->state |= MSSPI_ERROR;
+        SetLastError( (DWORD)scRet );
+        return 0;
+    }
+
+    h->keying_material.assign( keying_material_ctx.pbKeyingMaterial, keying_material_ctx.pbKeyingMaterial + keying_material_ctx.cbKeyingMaterial );
+    if( keying_material_ctx.pbKeyingMaterial )
+    {
+        msspi_logger_info( "FreeContextBuffer( pvBuffer = %016llX )", (uint64_t)(uintptr_t)keying_material_ctx.pbKeyingMaterial );
+        EXTERCALL( sspi->FreeContextBuffer( keying_material_ctx.pbKeyingMaterial ) );
+    }
+
+    if( keying_material )
+        *keying_material = h->keying_material.data();
+
+    if( keying_material_len )
+        *keying_material_len = h->keying_material.size();
+
+    return 1;
 
     MSSPIEHCATCH_HRET( 0 );
 }
@@ -1840,8 +2064,15 @@ int msspi_set_alpn( MSSPI_HANDLE h, const uint8_t * alpn, size_t len )
 {
     MSSPIEHTRY_h;
 
-    if( alpn && len )
-        h->alpn.assign( (const char *)alpn, len );
+    if( alpn && len > 0 )
+    {
+        h->alpn_holder.resize( sizeof( SEC_APPLICATION_PROTOCOLS ) + len );
+        SEC_APPLICATION_PROTOCOLS * sap = (SEC_APPLICATION_PROTOCOLS *)h->alpn_holder.data();
+        sap->ProtocolListsSize = (unsigned long)( sizeof( SEC_APPLICATION_PROTOCOL_LIST ) + len );
+        sap->ProtocolLists[0].ProtoNegoExt = SecApplicationProtocolNegotiationExt_ALPN;
+        sap->ProtocolLists[0].ProtocolListSize = (unsigned short)len;
+        memcpy( sap->ProtocolLists[0].ProtocolList, alpn, len );
+    }
 
     return 1;
 
@@ -2606,7 +2837,7 @@ int msspi_get_alpn( MSSPI_HANDLE h, const uint8_t ** alpn, size_t * len )
         if( alpn_ctx.ProtoNegoStatus == SecApplicationProtocolNegotiationStatus_Success &&
             alpn_ctx.ProtoNegoExt == SecApplicationProtocolNegotiationExt_ALPN &&
             alpn_ctx.ProtocolIdSize &&
-            alpn_ctx.ProtocolIdSize < h->alpn.length() )
+            alpn_ctx.ProtocolIdSize < h->alpn_holder.size() )
         {
             h->alpn.assign( (const char *)alpn_ctx.ProtocolId, alpn_ctx.ProtocolIdSize );
         }
