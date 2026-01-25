@@ -1949,7 +1949,7 @@ int msspi_set_keying_material_info( MSSPI_HANDLE h, const uint8_t * label, size_
     SecPkgContext_KeyingMaterialInfo keying_material_info;
     memset( &keying_material_info, 0, sizeof( keying_material_info ) );
 
-    keying_material_info.cbLabel = (WORD)label_str.length() + 1;
+    keying_material_info.cbLabel = (WORD)( label_str.length() + 1 );
     keying_material_info.pszLabel = (LPSTR)label_str.c_str();
     keying_material_info.cbContextValue = (WORD)context_len;
     keying_material_info.pbContextValue = (BYTE *)context;
