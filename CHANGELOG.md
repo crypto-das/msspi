@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4
+
+- Added DTLS-SRTP support: [`msspi_set_srtp_profiles()`](MSSPI.md#msspi_set_srtp_profiles), [`msspi_get_srtp_profile()`](MSSPI.md#msspi_get_srtp_profile)
+- Added keying material export: [`msspi_set_keying_material_info()`](MSSPI.md#msspi_set_keying_material_info), [`msspi_get_keying_material()`](MSSPI.md#msspi_get_keying_material)
+- Improved handshake loop in [`msspi_connect()`](MSSPI.md#msspi_connect) and [`msspi_accept()`](MSSPI.md#msspi_accept)
+
+---
+
 ## 1.0.3
 
 - Fixed broken logic regression in [`msspi_get_peerchain()`](MSSPI.md#msspi_get_peerchain)

@@ -87,7 +87,7 @@ The order of functions in the header file is **intentional and important**. Func
 2. **Basic configuration** - [`msspi_set_client()`](#msspi_set_client), [`msspi_set_dtls()`](#msspi_set_dtls) set operation mode
 3. **DTLS-specific** - [`msspi_set_dtls_peeraddr()`](#msspi_set_dtls_peeraddr), [`msspi_set_dtls_mtu()`](#msspi_set_dtls_mtu) if using DTLS
 4. **Credential-affecting parameters** - [`msspi_set_version()`](#msspi_set_version), [`msspi_set_cipherlist()`](#msspi_set_cipherlist), [`msspi_set_hostname()`](#msspi_set_hostname), [`msspi_set_peerauth()`](#msspi_set_peerauth), [`msspi_set_cachestring()`](#msspi_set_cachestring) **must be called before certificate functions** as they affect credential caching
-5. **Supporting configuration** - [`msspi_set_alpn()`](#msspi_set_alpn), [`msspi_set_certstore()`](#msspi_set_certstore), [`msspi_set_credprovider()`](#msspi_set_credprovider), [`msspi_set_pin_cache()`](#msspi_set_pin_cache), [`msspi_set_cert_cb()`](#msspi_set_cert_cb)
+5. **Supporting configuration** - [`msspi_set_alpn()`](#msspi_set_alpn), [`msspi_set_srtp_profiles()`](#msspi_set_srtp_profiles), [`msspi_set_certstore()`](#msspi_set_certstore), [`msspi_set_credprovider()`](#msspi_set_credprovider), [`msspi_set_pin_cache()`](#msspi_set_pin_cache), [`msspi_set_cert_cb()`](#msspi_set_cert_cb)
 6. **Certificate loading** - [`msspi_set_mycert()`](#msspi_set_mycert), [`msspi_add_mycert()`](#msspi_add_mycert), [`msspi_set_mycert_pfx()`](#msspi_set_mycert_pfx), [`msspi_add_mycert_pfx()`](#msspi_add_mycert_pfx), [`msspi_set_mycert_options()`](#msspi_set_mycert_options) **call LAST** to avoid cache mismatches
 
 **Connection Phase:**
@@ -344,6 +344,23 @@ Sets ALPN (Application-Layer Protocol Negotiation) protocols.
 - `h`: Handle
 - `alpn`: ALPN protocol list
 - `alpn_len`: Length of ALPN list
+
+**Returns:** `1` on success, `0` on failure
+
+---
+
+### msspi_set_srtp_profiles
+
+```c
+int msspi_set_srtp_profiles(MSSPI_HANDLE h, const uint8_t *profiles, size_t profiles_len);
+```
+
+Sets SRTP (Secure Real-time Transport Protocol) protection profiles for DTLS-SRTP negotiation.
+
+**Parameters:**
+- `h`: Handle
+- `profiles`: SRTP profile list in RFC 5764 format (list of 2-byte profile IDs)
+- `profiles_len`: Length of profiles data
 
 **Returns:** `1` on success, `0` on failure
 
@@ -967,6 +984,22 @@ Gets the negotiated ALPN protocol.
 
 ---
 
+### msspi_get_srtp_profile
+
+```c
+int msspi_get_srtp_profile(MSSPI_HANDLE h, uint16_t *profile);
+```
+
+Gets the negotiated SRTP protection profile after DTLS-SRTP handshake.
+
+**Parameters:**
+- `h`: Handle
+- `profile`: Pointer to receive the negotiated SRTP profile ID
+
+**Returns:** `1` on success, `0` on failure
+
+---
+
 ### msspi_get_verify_status
 
 ```c
@@ -1020,6 +1053,43 @@ Checks if the peer certificate exists in a specific Windows certificate store.
 - `status`: Pointer to receive result (`ERROR_SUCCESS` if certificate found, `ERROR_NOT_FOUND` otherwise)
 
 **Returns:** `1` on success (check `status`), `0` on failure
+
+---
+
+### msspi_set_keying_material_info
+
+```c
+int msspi_set_keying_material_info(MSSPI_HANDLE h, const uint8_t *label, size_t label_len, const uint8_t *context, size_t context_len, size_t keying_material_len);
+```
+
+Sets keying material export parameters for RFC 5705 (TLS) / RFC 8446 (TLS 1.3) key material export. Must be called after handshake completion and before [`msspi_get_keying_material()`](#msspi_get_keying_material).
+
+**Parameters:**
+- `h`: Handle
+- `label`: Export label (ASCII string as bytes)
+- `label_len`: Length of label
+- `context`: Optional context value (can be `NULL` if `context_len` is 0)
+- `context_len`: Length of context (0 if no context)
+- `keying_material_len`: Desired length of exported keying material
+
+**Returns:** `1` on success, `0` on failure
+
+---
+
+### msspi_get_keying_material
+
+```c
+int msspi_get_keying_material(MSSPI_HANDLE h, const uint8_t **keying_material, size_t *keying_material_len);
+```
+
+Exports keying material using parameters set by [`msspi_set_keying_material_info()`](#msspi_set_keying_material_info). Used for deriving keys for external protocols (e.g., SRTP keys in WebRTC).
+
+**Parameters:**
+- `h`: Handle
+- `keying_material`: Pointer to receive exported key material
+- `keying_material_len`: Pointer to receive length of exported material
+
+**Returns:** `1` on success, `0` on failure
 
 ---
 
