@@ -38,19 +38,19 @@ namespace _detail { template< typename T > struct _alignof_trick { char _; T _te
 
 #define IS_ALIGNED_PTR( x, type ) ( !( (uintptr_t)( x ) % ALIGNOF( type ) ) )
 
-#define CHECK_HANDLE( h, type ) if( !h || !IS_ALIGNED_PTR( h, type ) || h->magic != MSSPI_MAGIC_VERSION ){ SetLastError( ERROR_INVALID_HANDLE ); return 0; }
+#define CHECK_HANDLE( h, type, magic ) if( !h || !IS_ALIGNED_PTR( h, type ) || h->magic != magic ){ SetLastError( ERROR_INVALID_HANDLE ); return 0; }
 #if defined( QT_NO_EXCEPTIONS ) || defined( NO_EXCEPTIONS ) || ( defined( __clang__ ) && !defined( __EXCEPTIONS ) )
 #define MSSPIEHTRY_0
-#define MSSPIEHTRY_h CHECK_HANDLE( h, MSSPI_HANDLE )
-#define MSSPIEHTRY_ch CHECK_HANDLE( ch, MSSPI_CERT_HANDLE )
+#define MSSPIEHTRY_h CHECK_HANDLE( h, MSSPI_HANDLE, MSSPI_MAGIC_VERSION )
+#define MSSPIEHTRY_ch CHECK_HANDLE( ch, MSSPI_CERT_HANDLE, MSSPI_CERT_MAGIC_VERSION )
 #define MSSPIEHCATCH
 #define MSSPIEHCATCH_HRET( ret )
 #define MSSPIEHCATCH_RET( ret )
 #define MSSPIEHCATCH_0 MSSPIEHCATCH
 #else // no EXCEPTIONS
 #define MSSPIEHTRY_0 try {
-#define MSSPIEHTRY_h try { CHECK_HANDLE( h, MSSPI_HANDLE )
-#define MSSPIEHTRY_ch try { CHECK_HANDLE( ch, MSSPI_CERT_HANDLE )
+#define MSSPIEHTRY_h try { CHECK_HANDLE( h, MSSPI_HANDLE, MSSPI_MAGIC_VERSION )
+#define MSSPIEHTRY_ch try { CHECK_HANDLE( ch, MSSPI_CERT_HANDLE, MSSPI_CERT_MAGIC_VERSION )
 #define MSSPIEHCATCH } catch( ... ) {
 #define MSSPIEHCATCH_HRET( ret ) MSSPIEHCATCH; h->state |= MSSPI_ERROR; SetLastError( ERROR_INTERNAL_ERROR ); return ret; }
 #define MSSPIEHCATCH_RET( ret ) MSSPIEHCATCH; return ret; }
