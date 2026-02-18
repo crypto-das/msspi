@@ -38,7 +38,7 @@ namespace _detail { template< typename T > struct _alignof_trick { char _; T _te
 
 #define IS_ALIGNED_PTR( x, type ) ( !( (uintptr_t)( x ) % ALIGNOF( type ) ) )
 
-#define CHECK_HANDLE( h, type, magic ) if( !h || !IS_ALIGNED_PTR( h, type ) || h->magic != magic ){ SetLastError( ERROR_INVALID_HANDLE ); return 0; }
+#define CHECK_HANDLE( h, type, alive ) if( !h || !IS_ALIGNED_PTR( h, type ) || h->magic != alive ){ SetLastError( ERROR_INVALID_HANDLE ); return 0; }
 #if defined( QT_NO_EXCEPTIONS ) || defined( NO_EXCEPTIONS ) || ( defined( __clang__ ) && !defined( __EXCEPTIONS ) )
 #define MSSPIEHTRY_0
 #define MSSPIEHTRY_h CHECK_HANDLE( h, MSSPI_HANDLE, MSSPI_MAGIC_VERSION )
