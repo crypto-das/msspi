@@ -120,29 +120,15 @@ MSSPI_CERT_HANDLE msspi_cert_open( const uint8_t * certbuf, size_t len )
 {
     MSSPIEHTRY_0;
 
-    PCCERT_CONTEXT cert = NULL;
-
     if( !certbuf || !len )
     {
         SetLastError( ERROR_BAD_ARGUMENTS );
         return NULL;
     }
 
-    cert = CertCreateCertificateContext( X509_ASN_ENCODING, (const BYTE *)certbuf, (DWORD)len );
+    PCCERT_CONTEXT cert = msspi_cert_create_context( certbuf, len );
     if( !cert )
-    {
-        std::vector<BYTE> certbufder;
-        DWORD dwData;
-        if( CryptStringToBinaryA( (const char *)certbuf, (DWORD)len, CRYPT_STRING_BASE64_ANY, NULL, &dwData, NULL, NULL ) )
-        {
-            certbufder.resize( dwData );
-            if( CryptStringToBinaryA( (const char *)certbuf, (DWORD)len, CRYPT_STRING_BASE64_ANY, certbufder.data(), &dwData, NULL, NULL ) )
-                cert = CertCreateCertificateContext( X509_ASN_ENCODING, certbufder.data(), dwData );
-        }
-
-        if( !cert )
-            return NULL; // last error included
-    }
+        return NULL; // last error included
 
     return msspi_cert_handle( new MSSPI_CERT( cert ) );
 
