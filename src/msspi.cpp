@@ -2640,6 +2640,9 @@ static PCCERT_CONTEXT msspi_cert_create_context( const uint8_t * certbuf, size_t
 {
     if( !certbuf || !len || len < CERTIFICATE_THRESHOLD )
         return NULL;
+    PCCERT_CONTEXT ctx = CertCreateCertificateContext( X509_ASN_ENCODING, certbuf, (DWORD)len );
+    if( ctx )
+        return ctx;
     DWORD dwData;
     if( !CryptStringToBinaryA( (const char *)certbuf, (DWORD)len, CRYPT_STRING_ANY, NULL, &dwData, NULL, NULL ) )
         return NULL;
