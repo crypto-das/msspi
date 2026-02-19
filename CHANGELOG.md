@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5
+
+- Improved certificate and PFX format probing via `CRYPT_STRING_ANY`
+- Fixed `CHECK_HANDLE` macro for `MSSPI_CERT_HANDLE`
+- Added `static-cert` build target (`libmsspi-cert.a`) to Linux Makefile
+
+---
+
 ## 1.0.4
 
 - Added DTLS-SRTP support: [`msspi_set_srtp_profiles()`](MSSPI.md#msspi_set_srtp_profiles), [`msspi_get_srtp_profile()`](MSSPI.md#msspi_get_srtp_profile)
