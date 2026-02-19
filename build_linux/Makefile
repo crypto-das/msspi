@@ -1,8 +1,10 @@
-all: static static-capix
+all: static static-capix static-cert
 
 static: libmsspi.a
 
 static-capix: libmsspi-capix.a
+
+static-cert: libmsspi-cert.a
 
 shared: libmsspi.so
 
@@ -21,8 +23,11 @@ libmsspi.a: msspi.o
 libmsspi-capix.a: msspi-capix.o
 	ar cr libmsspi-capix.a msspi-capix.o
 
+libmsspi-cert.a: msspi-cert.o
+	ar cr libmsspi-cert.a msspi-cert.o
+
 libmsspi.so: msspi.o
 	g++ -shared -o libmsspi.so msspi.o
 
 clean:
-	rm -f libmsspi.so libmsspi.a libmsspi-capix.a msspi.o msspi-capix.o
+	rm -f libmsspi.so libmsspi.a libmsspi-capix.a libmsspi-cert.a msspi.o msspi-capix.o msspi-cert.o

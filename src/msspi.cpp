@@ -38,19 +38,19 @@ namespace _detail { template< typename T > struct _alignof_trick { char _; T _te
 
 #define IS_ALIGNED_PTR( x, type ) ( !( (uintptr_t)( x ) % ALIGNOF( type ) ) )
 
-#define CHECK_HANDLE( h, type ) if( !h || !IS_ALIGNED_PTR( h, type ) || h->magic != MSSPI_MAGIC_VERSION ){ SetLastError( ERROR_INVALID_HANDLE ); return 0; }
+#define CHECK_HANDLE( h, type, alive ) if( !h || !IS_ALIGNED_PTR( h, type ) || h->magic != alive ){ SetLastError( ERROR_INVALID_HANDLE ); return 0; }
 #if defined( QT_NO_EXCEPTIONS ) || defined( NO_EXCEPTIONS ) || ( defined( __clang__ ) && !defined( __EXCEPTIONS ) )
 #define MSSPIEHTRY_0
-#define MSSPIEHTRY_h CHECK_HANDLE( h, MSSPI_HANDLE )
-#define MSSPIEHTRY_ch CHECK_HANDLE( ch, MSSPI_CERT_HANDLE )
+#define MSSPIEHTRY_h CHECK_HANDLE( h, MSSPI_HANDLE, MSSPI_MAGIC_VERSION )
+#define MSSPIEHTRY_ch CHECK_HANDLE( ch, MSSPI_CERT_HANDLE, MSSPI_CERT_MAGIC_VERSION )
 #define MSSPIEHCATCH
 #define MSSPIEHCATCH_HRET( ret )
 #define MSSPIEHCATCH_RET( ret )
 #define MSSPIEHCATCH_0 MSSPIEHCATCH
 #else // no EXCEPTIONS
 #define MSSPIEHTRY_0 try {
-#define MSSPIEHTRY_h try { CHECK_HANDLE( h, MSSPI_HANDLE )
-#define MSSPIEHTRY_ch try { CHECK_HANDLE( ch, MSSPI_CERT_HANDLE )
+#define MSSPIEHTRY_h try { CHECK_HANDLE( h, MSSPI_HANDLE, MSSPI_MAGIC_VERSION )
+#define MSSPIEHTRY_ch try { CHECK_HANDLE( ch, MSSPI_CERT_HANDLE, MSSPI_CERT_MAGIC_VERSION )
 #define MSSPIEHCATCH } catch( ... ) {
 #define MSSPIEHCATCH_HRET( ret ) MSSPIEHCATCH; h->state |= MSSPI_ERROR; SetLastError( ERROR_INTERNAL_ERROR ); return ret; }
 #define MSSPIEHCATCH_RET( ret ) MSSPIEHCATCH; return ret; }
@@ -2525,26 +2525,16 @@ static PCCERT_CONTEXT pfx2cert( const uint8_t * pfx, size_t len, const uint8_t *
     for( size_t i = 0; i < wpassword.length(); ++i )
         wpassword[i] = (WCHAR)password[i];
 
-    CRYPT_DATA_BLOB pfxBlob = { (DWORD)len, (BYTE *)pfx };
+    DWORD dwData;
+    if( !CryptStringToBinaryA( (LPCSTR)pfx, (DWORD)len, CRYPT_STRING_ANY, NULL, &dwData, NULL, NULL ) )
+        return NULL;
+    std::vector<BYTE> der( dwData );
+    if( !CryptStringToBinaryA( (LPCSTR)pfx, (DWORD)len, CRYPT_STRING_ANY, der.data(), &dwData, NULL, NULL ) )
+        return NULL;
+    CRYPT_DATA_BLOB pfxBlob = { dwData, der.data() };
     HCERTSTORE hStore = PFXImportCertStore( &pfxBlob, wpassword.data(), PKCS12_NO_PERSIST_KEY );
     if( !hStore )
-    {
-        std::vector<BYTE> PFXDer;
-        DWORD dwData;
-        if( CryptStringToBinaryA( (LPCSTR)pfx, (DWORD)len, CRYPT_STRING_BASE64_ANY, NULL, &dwData, NULL, NULL ) )
-        {
-            PFXDer.resize( dwData );
-            if( CryptStringToBinaryA( (LPCSTR)pfx, (DWORD)len, CRYPT_STRING_BASE64_ANY, PFXDer.data(), &dwData, NULL, NULL ) )
-            {
-                pfxBlob.cbData = dwData;
-                pfxBlob.pbData = PFXDer.data();
-                hStore = PFXImportCertStore( &pfxBlob, wpassword.data(), PKCS12_NO_PERSIST_KEY );
-            }
-        }
-
-        if( !hStore )
-            return NULL;
-    }
+        return NULL;
 
     PCCERT_CONTEXT pfxcert, prevcert = NULL;
     for( ;; )
@@ -2644,22 +2634,24 @@ static bool msspi_set_mycert_finalize( MSSPI_HANDLE h, PCCERT_CONTEXT certfound,
     return isOK;
 }
 
+#define CERTIFICATE_THRESHOLD 200
+
+static PCCERT_CONTEXT msspi_cert_create_context( const uint8_t * certbuf, size_t len )
+{
+    if( !certbuf || !len || len < CERTIFICATE_THRESHOLD )
+        return NULL;
+    DWORD dwData;
+    if( !CryptStringToBinaryA( (const char *)certbuf, (DWORD)len, CRYPT_STRING_ANY, NULL, &dwData, NULL, NULL ) )
+        return NULL;
+    std::vector<BYTE> der( dwData );
+    if( !CryptStringToBinaryA( (const char *)certbuf, (DWORD)len, CRYPT_STRING_ANY, der.data(), &dwData, NULL, NULL ) )
+        return NULL;
+    return CertCreateCertificateContext( X509_ASN_ENCODING, der.data(), dwData );
+}
+
 static PCCERT_CONTEXT findcert( const uint8_t * certData, size_t len, const char * certstore )
 {
-    PCCERT_CONTEXT certprobe = NULL;
-
-    certprobe = CertCreateCertificateContext( X509_ASN_ENCODING, certData, (DWORD)len ); // DER format
-    if( !certprobe )
-    {
-        std::vector<BYTE> clientCertDer;
-        DWORD dwData;
-        if( CryptStringToBinaryA( (const char *)certData, (DWORD)len, CRYPT_STRING_BASE64_ANY, NULL, &dwData, NULL, NULL ) )
-        {
-            clientCertDer.resize( dwData );
-            if( CryptStringToBinaryA( (const char *)certData, (DWORD)len, CRYPT_STRING_BASE64_ANY, clientCertDer.data(), &dwData, NULL, NULL ) )
-                certprobe = CertCreateCertificateContext( X509_ASN_ENCODING, clientCertDer.data(), dwData ); // PEM format
-        }
-    }
+    PCCERT_CONTEXT certprobe = msspi_cert_create_context( certData, len );
 
     PCCERT_CONTEXT certfound = NULL;
     HCERTSTORE hStore = 0;
